@@ -125,7 +125,7 @@ while true; do
         echo "REVIEW $id $state $body"
       fi
     done
-  sleep $POLL_INTERVAL
+  /bin/sleep $POLL_INTERVAL
 done
 ```
 
