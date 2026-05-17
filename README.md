@@ -42,7 +42,7 @@ When you open a PR and an AI reviewer (Gemini, Copilot, etc.) leaves comments, t
 ```bash
 git clone https://github.com/rculbertson/pr-review-loop
 mkdir -p ~/.claude/skills/pr-review-loop
-cp pr-review-loop/skill.md ~/.claude/skills/pr-review-loop/
+cp pr-review-loop/SKILL.md ~/.claude/skills/pr-review-loop/
 ```
 
 Then restart Claude Code (or open a new session) and `/pr-review-loop` will be available.
