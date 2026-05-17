@@ -55,12 +55,27 @@ If that command fails (no associated PR), stop and tell the user no PR was found
    ```
    Print the PR title and URL so the user can confirm the right PR is targeted.
 
-3. Create a state file to track processed comment IDs:
+3. Create a state file and pre-populate it with already-addressed comment IDs:
    ```bash
    STATE_FILE=$(mktemp /tmp/pr-review-loop-${PR}-XXXXXX.txt)
-   echo "State file: $STATE_FILE"
    ```
-   This file will contain one comment/review node ID per line.
+   Fetch all inline review comments on the PR and check which ones already have a reply from the authenticated user (i.e. us). Pre-populate `$STATE_FILE` with those IDs so they are skipped:
+   ```bash
+   # Get our own username
+   OUR_LOGIN=$(gh api user --jq '.login')
+
+   # Find inline review comment IDs that already have a reply from us
+   gh api repos/{owner}/{repo}/pulls/$PR/comments --jq \
+     ".[] | select(.user.login==\"$REVIEWER\") | .id" | while read id; do
+     # Check if any reply to this comment is from us
+     replied=$(gh api repos/{owner}/{repo}/pulls/comments/$id/replies \
+       --jq ".[] | select(.user.login==\"$OUR_LOGIN\") | .id" 2>/dev/null | head -1)
+     if [ -n "$replied" ]; then
+       echo "$id" >> "$STATE_FILE"
+     fi
+   done
+   ```
+   This means that on a fresh session, comments already replied to in a previous session are treated as already processed and will not be re-addressed.
 
 4. Print a summary of the configuration:
    ```
