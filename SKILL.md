@@ -35,7 +35,7 @@ Parse the invocation arguments:
 |----------|---------|-------------|
 | First positional arg | (none) | PR number (e.g. `42`) or full GitHub PR URL |
 | `--auto-merge` | false | Merge the PR automatically once approved |
-| `--reviewer <username>` | `gemini-code-assist[bot]` | GitHub username of the reviewer bot |
+| `--reviewer <username>` | `gemini-code-assist` | GitHub username of the reviewer bot |
 | `--review-command <text>` | `/gemini review` | Comment body that triggers a new review |
 | `--poll-interval <seconds>` | `30` | Seconds to wait between polls when no new comments |
 
@@ -117,7 +117,15 @@ For each new comment, in order:
 
 2. **Read the context** — the comment body references specific files and lines. Use the `Read` tool to read the full relevant file(s) before deciding how to respond. Do not act on a comment excerpt without reading the actual code.
 
-3. **Decide: agree or disagree** — based on the comment's suggestion and the actual code:
+3. **Announce the comment and your intent** — before doing anything, print:
+   ```
+   Comment from $REVIEWER:
+   "$COMMENT_BODY"
+
+   Proposed action: [one sentence describing what you will change, or that you will dispute this]
+   ```
+
+4. **Decide: agree or disagree** — based on the comment's suggestion and the actual code:
 
    **If you AGREE** with the suggestion:
    - Make the code change using `Edit` or `Write` tools
@@ -191,6 +199,6 @@ Use `--squash` by default. If the merge fails with a squash error (e.g., branch 
 - **Batch changes**: When multiple comments touch the same file, process them all before committing. One commit per poll cycle, not one commit per comment.
 - **Read before editing**: Always use the `Read` tool to see the current file state before making edits. Comment line numbers may be stale if earlier commits have shifted lines.
 - **Commit message quality**: Reference the specific issue(s) addressed, not just "address review comments".
-- **Reviewer username is case-sensitive and exact**: GitHub usernames for bots often include `[bot]` suffix (e.g., `gemini-code-assist[bot]`). Match `.author.login` exactly.
+- **Reviewer username is case-sensitive and exact**: Match `.author.login` exactly.
 - **Do not re-process seen comments**: The state file is the source of truth. Always check it before processing a comment.
 - **Stay on the PR branch**: Verify you're on the correct branch with `git branch --show-current` if in doubt.
