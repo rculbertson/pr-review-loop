@@ -140,16 +140,22 @@ For each new comment event received from the monitor, in order:
 
    **If you AGREE** with the suggestion:
    - Make the code change using `Edit` or `Write` tools
+   - Reply inline to the comment thread confirming the fix (same `gh api` call as the disagree path above), e.g. "Fixed — [one sentence describing what was changed]."
    - Note the change for the commit message
    - Do NOT commit yet — collect all agreed changes before committing
 
    **If you DISAGREE** with the suggestion:
-   - Post a reply explaining your reasoning:
-     ```bash
-     gh pr comment $PR --body "RE: [reviewer's point]
-
-     I disagree with this suggestion because [specific technical reason]. [Explanation of why the current code is correct or the suggestion doesn't apply in this context]."
-     ```
+   - Reply inline to the specific comment thread:
+     - For inline review comments (have a `$COMMENT_ID`):
+       ```bash
+       gh api repos/{owner}/{repo}/pulls/$PR/comments/$COMMENT_ID/replies \
+         --method POST --field body="I disagree with this suggestion because [specific technical reason]. [Explanation of why the current code is correct or the suggestion doesn't apply in this context]."
+       ```
+     - For PR-level review comments (have a `$REVIEW_ID`):
+       ```bash
+       gh api repos/{owner}/{repo}/pulls/$PR/reviews/$REVIEW_ID/comments \
+         --method POST --field body="..."
+       ```
    - Be specific and technical. Reference the code, the invariants, or the design decision that makes the suggestion incorrect or inapplicable.
 
 ### Step 4: Commit and push (if changes were made)
