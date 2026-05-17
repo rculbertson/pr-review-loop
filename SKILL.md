@@ -83,37 +83,48 @@ If the result is `APPROVED`, exit the loop (see Termination).
 
 ### Step 1: Fetch new comments
 
-Fetch all PR comments (both review thread comments and issue-level comments):
+Use the Monitor tool with a script that:
+1. Checks for new comments from `$REVIEWER` not already in `$STATE_FILE`
+2. **Immediately writes each new ID to `$STATE_FILE`** before emitting the event — this prevents the monitor from re-firing the same comment on the next poll cycle
+3. Emits the comment body as the event payload so Claude can act on it without re-fetching
+
+The monitor script should look roughly like:
 
 ```bash
-gh pr view $PR --json comments,reviews
+while true; do
+  # Check inline review comments
+  gh api repos/{owner}/{repo}/pulls/$PR/comments \
+    --jq ".[] | select(.user.login==\"$REVIEWER\") | [.id, .body, .path, .line] | @tsv" \
+  | while IFS=$'\t' read id body path line; do
+      if ! grep -qxF "$id" "$STATE_FILE"; then
+        echo "$id" >> "$STATE_FILE"   # mark seen BEFORE emitting
+        echo "INLINE $id $path:$line $body"
+      fi
+    done
+  # Check PR-level reviews
+  gh pr view $PR --json reviews \
+    --jq ".reviews[] | select(.author.login==\"$REVIEWER\") | select(.state==\"CHANGES_REQUESTED\" or .state==\"COMMENTED\") | select(.body != \"\") | [.id, .state, .body] | @tsv" \
+  | while IFS=$'\t' read id state body; do
+      if ! grep -qxF "$id" "$STATE_FILE"; then
+        echo "$id" >> "$STATE_FILE"   # mark seen BEFORE emitting
+        echo "REVIEW $id $state $body"
+      fi
+    done
+  sleep $POLL_INTERVAL
+done
 ```
 
-From the `comments` array, filter for entries where:
-- `.author.login` exactly matches `$REVIEWER`
-- `.id` is NOT already in `$STATE_FILE`
-
-From the `reviews` array, filter for entries where:
-- `.author.login` exactly matches `$REVIEWER`
-- `.id` is NOT already in `$STATE_FILE`
-- `.state` is `CHANGES_REQUESTED` or `COMMENTED`
-- `.body` is non-empty
-
-Collect all matching entries as the set of new comments to process.
+The key invariant: **write to `$STATE_FILE` before printing the event line**. This ensures that even if the monitor fires again before Claude finishes processing, the same ID will never be emitted twice.
 
 ### Step 2: No new comments — wait
 
-If no new comments were found, sleep and retry:
-```bash
-sleep $POLL_INTERVAL
-```
-Then go back to Step 1.
+If no new comments were found in a poll cycle, the monitor script sleeps and retries automatically. Claude waits for the next Monitor event.
 
 ### Step 3: Process each new comment
 
-For each new comment, in order:
+For each new comment event received from the monitor, in order:
 
-1. **Mark as seen** — append the comment's `.id` to `$STATE_FILE` immediately so it won't be reprocessed even if something fails.
+1. **ID is already marked seen** — the monitor script wrote it to `$STATE_FILE` before emitting the event. No action needed here.
 
 2. **Read the context** — the comment body references specific files and lines. Use the `Read` tool to read the full relevant file(s) before deciding how to respond. Do not act on a comment excerpt without reading the actual code.
 
