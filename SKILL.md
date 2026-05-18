@@ -106,48 +106,55 @@ Use the Monitor tool with a script that:
 The monitor script should look roughly like:
 
 ```bash
+# Ensure common tool locations are on PATH
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+
+ts() { date '+%H:%M:%S' 2>/dev/null || echo "??:??:??"; }
+
 while true; do
-  echo "[$(date '+%H:%M:%S')] Polling PR $PR for new comments from $REVIEWER..."
+  echo "[$(ts)] Polling PR $PR for new comments from $REVIEWER..."
 
   # Check inline review comments
-  echo "[$(date '+%H:%M:%S')] Fetching inline review comments..."
+  echo "[$(ts)] Fetching inline review comments..."
   inline_results=$(gh api repos/{owner}/{repo}/pulls/$PR/comments \
-    --jq ".[] | select(.user.login==\"$REVIEWER\") | [.id, .body, .path, .line] | @tsv" 2>&1)
+    --jq ".[] | select(.user.login==\"$REVIEWER\") | [.id, .path, .line, .body] | @tsv" 2>&1)
   if [ $? -ne 0 ]; then
-    echo "[$(date '+%H:%M:%S')] ERROR fetching inline comments: $inline_results"
+    echo "[$(ts)] ERROR fetching inline comments: $inline_results"
   else
-    new_inline=0
-    echo "$inline_results" | while IFS=$'\t' read id body path line; do
+    found_inline=0
+    echo "$inline_results" | while IFS=$'\t' read id path line body; do
+      [ -z "$id" ] && continue
       if ! grep -qxF "$id" "$STATE_FILE"; then
         echo "$id" >> "$STATE_FILE"
-        echo "[$(date '+%H:%M:%S')] New inline comment on $path:$line (id=$id)"
+        echo "[$(ts)] New inline comment on $path:$line (id=$id)"
         echo "INLINE $id $path:$line $body"
-        new_inline=$((new_inline+1))
+        found_inline=$((found_inline+1))
       fi
     done
-    [ "$new_inline" -eq 0 ] && echo "[$(date '+%H:%M:%S')] No new inline comments."
+    [ "$found_inline" -eq 0 ] && echo "[$(ts)] No new inline comments."
   fi
 
   # Check PR-level reviews
-  echo "[$(date '+%H:%M:%S')] Fetching PR-level reviews..."
+  echo "[$(ts)] Fetching PR-level reviews..."
   review_results=$(gh pr view $PR --json reviews \
     --jq ".reviews[] | select(.author.login==\"$REVIEWER\") | select(.state==\"CHANGES_REQUESTED\" or .state==\"COMMENTED\") | select(.body != \"\") | [.id, .state, .body] | @tsv" 2>&1)
   if [ $? -ne 0 ]; then
-    echo "[$(date '+%H:%M:%S')] ERROR fetching reviews: $review_results"
+    echo "[$(ts)] ERROR fetching reviews: $review_results"
   else
-    new_reviews=0
+    found_reviews=0
     echo "$review_results" | while IFS=$'\t' read id state body; do
+      [ -z "$id" ] && continue
       if ! grep -qxF "$id" "$STATE_FILE"; then
         echo "$id" >> "$STATE_FILE"
-        echo "[$(date '+%H:%M:%S')] New review comment (state=$state, id=$id)"
+        echo "[$(ts)] New review comment (state=$state, id=$id)"
         echo "REVIEW $id $state $body"
-        new_reviews=$((new_reviews+1))
+        found_reviews=$((found_reviews+1))
       fi
     done
-    [ "$new_reviews" -eq 0 ] && echo "[$(date '+%H:%M:%S')] No new review comments."
+    [ "$found_reviews" -eq 0 ] && echo "[$(ts)] No new review comments."
   fi
 
-  echo "[$(date '+%H:%M:%S')] Sleeping ${POLL_INTERVAL}s..."
+  echo "[$(ts)] Sleeping ${POLL_INTERVAL}s..."
   /bin/sleep $POLL_INTERVAL
 done
 ```
