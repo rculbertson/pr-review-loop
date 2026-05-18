@@ -88,88 +88,63 @@ If that command fails (no associated PR), stop and tell the user no PR was found
 
 ## Poll Loop
 
-Repeat the following steps until a termination condition is met. **Before each iteration**, check:
+**Do not use the Monitor tool.** It runs in a subshell environment where `gh` and other tools may not be on PATH. Instead, Claude drives the polling loop directly using the Bash tool for each individual `gh` call.
 
+Repeat the following steps until a termination condition is met.
+
+### Step 1: Check approval status
+
+Run via the Bash tool:
 ```bash
 gh pr view $PR --json reviewDecision --jq '.reviewDecision'
 ```
-
 If the result is `APPROVED`, exit the loop (see Termination).
 
-### Step 1: Fetch new comments
+### Step 2: Fetch new inline comments
 
-Use the Monitor tool with a script that:
-1. Checks for new comments from `$REVIEWER` not already in `$STATE_FILE`
-2. **Immediately writes each new ID to `$STATE_FILE`** before emitting the event — this prevents the monitor from re-firing the same comment on the next poll cycle
-3. Emits the comment body as the event payload so Claude can act on it without re-fetching
+Print: `[HH:MM:SS] Fetching inline review comments...`
 
-The monitor script should look roughly like:
-
+Run via the Bash tool:
 ```bash
-# Ensure common tool locations are on PATH
-export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
-
-ts() { date '+%H:%M:%S' 2>/dev/null || echo "??:??:??"; }
-
-while true; do
-  echo "[$(ts)] Polling PR $PR for new comments from $REVIEWER..."
-
-  # Check inline review comments
-  echo "[$(ts)] Fetching inline review comments..."
-  inline_results=$(gh api repos/{owner}/{repo}/pulls/$PR/comments \
-    --jq ".[] | select(.user.login==\"$REVIEWER\") | [.id, .path, .line, .body] | @tsv" 2>&1)
-  if [ $? -ne 0 ]; then
-    echo "[$(ts)] ERROR fetching inline comments: $inline_results"
-  else
-    found_inline=0
-    echo "$inline_results" | while IFS=$'\t' read id path line body; do
-      [ -z "$id" ] && continue
-      if ! grep -qxF "$id" "$STATE_FILE"; then
-        echo "$id" >> "$STATE_FILE"
-        echo "[$(ts)] New inline comment on $path:$line (id=$id)"
-        echo "INLINE $id $path:$line $body"
-        found_inline=$((found_inline+1))
-      fi
-    done
-    [ "$found_inline" -eq 0 ] && echo "[$(ts)] No new inline comments."
-  fi
-
-  # Check PR-level reviews
-  echo "[$(ts)] Fetching PR-level reviews..."
-  review_results=$(gh pr view $PR --json reviews \
-    --jq ".reviews[] | select(.author.login==\"$REVIEWER\") | select(.state==\"CHANGES_REQUESTED\" or .state==\"COMMENTED\") | select(.body != \"\") | [.id, .state, .body] | @tsv" 2>&1)
-  if [ $? -ne 0 ]; then
-    echo "[$(ts)] ERROR fetching reviews: $review_results"
-  else
-    found_reviews=0
-    echo "$review_results" | while IFS=$'\t' read id state body; do
-      [ -z "$id" ] && continue
-      if ! grep -qxF "$id" "$STATE_FILE"; then
-        echo "$id" >> "$STATE_FILE"
-        echo "[$(ts)] New review comment (state=$state, id=$id)"
-        echo "REVIEW $id $state $body"
-        found_reviews=$((found_reviews+1))
-      fi
-    done
-    [ "$found_reviews" -eq 0 ] && echo "[$(ts)] No new review comments."
-  fi
-
-  echo "[$(ts)] Sleeping ${POLL_INTERVAL}s..."
-  /bin/sleep $POLL_INTERVAL
-done
+gh api repos/{owner}/{repo}/pulls/$PR/comments \
+  --jq '.[] | select(.user.login=="REVIEWER") | [.id, .path, (.line // .original_line // 0), .body] | @tsv'
 ```
 
-The key invariant: **write to `$STATE_FILE` before printing the event line**. This ensures that even if the monitor fires again before Claude finishes processing, the same ID will never be emitted twice.
+Parse the TSV output line by line. For each row (fields: `id`, `path`, `line`, `body`):
+- Skip if `id` is already in `$STATE_FILE`
+- Otherwise: append `id` to `$STATE_FILE`, print `New inline comment on $path:$line (id=$id)`, and add to the list of comments to process this cycle
 
-### Step 2: No new comments — wait
+If no new comments found, print: `No new inline comments.`
 
-If no new comments were found in a poll cycle, the monitor script sleeps and retries automatically. Claude waits for the next Monitor event.
+### Step 3: Fetch new PR-level review comments
 
-### Step 3: Process each new comment
+Print: `[HH:MM:SS] Fetching PR-level reviews...`
 
-For each new comment event received from the monitor, in order:
+Run via the Bash tool:
+```bash
+gh pr view $PR --json reviews \
+  --jq '.reviews[] | select(.author.login=="REVIEWER") | select(.state=="CHANGES_REQUESTED" or .state=="COMMENTED") | select(.body != "") | [.id, .state, .body] | @tsv'
+```
 
-1. **ID is already marked seen** — the monitor script wrote it to `$STATE_FILE` before emitting the event. No action needed here.
+Parse the TSV output. For each row (fields: `id`, `state`, `body`):
+- Skip if `id` is already in `$STATE_FILE`
+- Otherwise: append `id` to `$STATE_FILE`, print `New review (state=$state, id=$id)`, and add to the list
+
+If no new comments found, print: `No new PR-level reviews.`
+
+### Step 4: No new comments — wait
+
+If both Step 2 and Step 3 found no new comments, print `Sleeping ${POLL_INTERVAL}s...` and run:
+```bash
+/bin/sleep $POLL_INTERVAL
+```
+Then go back to Step 1.
+
+### Step 5: Process each new comment
+
+For each new comment collected in Steps 2–3, in order:
+
+1. **ID is already marked seen** — it was written to `$STATE_FILE` when discovered. No action needed here.
 
 2. **Read the context** — the comment body references specific files and lines. Use the `Read` tool to read the full relevant file(s) before deciding how to respond. Do not act on a comment excerpt without reading the actual code.
 
@@ -203,7 +178,7 @@ For each new comment event received from the monitor, in order:
        ```
    - Be specific and technical. Reference the code, the invariants, or the design decision that makes the suggestion incorrect or inapplicable.
 
-### Step 4: Commit and push (if changes were made)
+### Step 6: Commit and push (if changes were made)
 
 If any code changes were made in Step 3:
 
@@ -219,7 +194,7 @@ If any code changes were made in Step 3:
 
 If no changes were made (all comments disputed), skip to Step 5.
 
-### Step 5: Request re-review
+### Step 7: Request re-review
 
 If changes were pushed, post the re-review trigger comment:
 ```bash
@@ -231,7 +206,7 @@ Then print a status update to the user:
 Pushed changes and requested re-review. Waiting for $REVIEWER to respond...
 ```
 
-### Step 6: Check termination
+### Step 8: Check termination
 
 Check the termination conditions (see below). If none are met, go back to Step 1.
 
