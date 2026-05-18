@@ -107,24 +107,47 @@ The monitor script should look roughly like:
 
 ```bash
 while true; do
+  echo "[$(date '+%H:%M:%S')] Polling PR $PR for new comments from $REVIEWER..."
+
   # Check inline review comments
-  gh api repos/{owner}/{repo}/pulls/$PR/comments \
-    --jq ".[] | select(.user.login==\"$REVIEWER\") | [.id, .body, .path, .line] | @tsv" \
-  | while IFS=$'\t' read id body path line; do
+  echo "[$(date '+%H:%M:%S')] Fetching inline review comments..."
+  inline_results=$(gh api repos/{owner}/{repo}/pulls/$PR/comments \
+    --jq ".[] | select(.user.login==\"$REVIEWER\") | [.id, .body, .path, .line] | @tsv" 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "[$(date '+%H:%M:%S')] ERROR fetching inline comments: $inline_results"
+  else
+    new_inline=0
+    echo "$inline_results" | while IFS=$'\t' read id body path line; do
       if ! grep -qxF "$id" "$STATE_FILE"; then
-        echo "$id" >> "$STATE_FILE"   # mark seen BEFORE emitting
+        echo "$id" >> "$STATE_FILE"
+        echo "[$(date '+%H:%M:%S')] New inline comment on $path:$line (id=$id)"
         echo "INLINE $id $path:$line $body"
+        new_inline=$((new_inline+1))
       fi
     done
+    [ "$new_inline" -eq 0 ] && echo "[$(date '+%H:%M:%S')] No new inline comments."
+  fi
+
   # Check PR-level reviews
-  gh pr view $PR --json reviews \
-    --jq ".reviews[] | select(.author.login==\"$REVIEWER\") | select(.state==\"CHANGES_REQUESTED\" or .state==\"COMMENTED\") | select(.body != \"\") | [.id, .state, .body] | @tsv" \
-  | while IFS=$'\t' read id state body; do
+  echo "[$(date '+%H:%M:%S')] Fetching PR-level reviews..."
+  review_results=$(gh pr view $PR --json reviews \
+    --jq ".reviews[] | select(.author.login==\"$REVIEWER\") | select(.state==\"CHANGES_REQUESTED\" or .state==\"COMMENTED\") | select(.body != \"\") | [.id, .state, .body] | @tsv" 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "[$(date '+%H:%M:%S')] ERROR fetching reviews: $review_results"
+  else
+    new_reviews=0
+    echo "$review_results" | while IFS=$'\t' read id state body; do
       if ! grep -qxF "$id" "$STATE_FILE"; then
-        echo "$id" >> "$STATE_FILE"   # mark seen BEFORE emitting
+        echo "$id" >> "$STATE_FILE"
+        echo "[$(date '+%H:%M:%S')] New review comment (state=$state, id=$id)"
         echo "REVIEW $id $state $body"
+        new_reviews=$((new_reviews+1))
       fi
     done
+    [ "$new_reviews" -eq 0 ] && echo "[$(date '+%H:%M:%S')] No new review comments."
+  fi
+
+  echo "[$(date '+%H:%M:%S')] Sleeping ${POLL_INTERVAL}s..."
   /bin/sleep $POLL_INTERVAL
 done
 ```
