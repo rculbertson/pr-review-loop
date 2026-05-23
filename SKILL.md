@@ -180,7 +180,7 @@ For each new comment collected in Steps 2–3, in order:
 
 ### Step 6: Commit and push (if changes were made)
 
-If any code changes were made in Step 3:
+If any code changes were made in Step 5:
 
 1. Review all changes: `git diff`
 2. Stage all modified files: `git add -A`
@@ -192,18 +192,22 @@ If any code changes were made in Step 3:
    ```
 4. Push: `git push`
 
-If no changes were made (all comments disputed), skip to Step 5.
+If no changes were made (all comments disputed), skip to Step 7.
 
 ### Step 7: Request re-review
 
-If changes were pushed, post the re-review trigger comment:
+If changes were pushed **or** any comments were disputed this cycle, post the re-review trigger comment so the reviewer can see and respond to the disputes:
 ```bash
 gh pr comment $PR --body "$REVIEW_COMMAND"
 ```
 
 Then print a status update to the user:
 ```
+# If changes were pushed:
 Pushed changes and requested re-review. Waiting for $REVIEWER to respond...
+
+# If only disputes were posted (no code changes):
+Posted disputes and requested re-review. Waiting for $REVIEWER to respond to the disagreements...
 ```
 
 ### Step 8: Check termination
