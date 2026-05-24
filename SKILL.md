@@ -37,7 +37,7 @@ Parse the invocation arguments:
 | `--auto-merge` | false | Merge the PR automatically once approved |
 | `--reviewer <username>` | `gemini-code-assist` | GitHub username of the reviewer bot |
 | `--review-command <text>` | `/gemini review` | Comment body that triggers a new review |
-| `--poll-interval <seconds>` | `30` | Seconds to wait between polls when no new comments |
+| `--poll-interval <seconds>` | `10` | Seconds to wait between polls when no new comments |
 
 If no PR number or URL is provided, infer the PR from the current branch by running:
 ```bash
@@ -218,7 +218,7 @@ Check the termination conditions (see below). If none are met, go back to Step 1
 
 **Approved**: If `gh pr view $PR --json reviewDecision --jq '.reviewDecision'` returns `APPROVED`, print a success message and exit the loop.
 
-**No new comments after re-review**: If the poll after requesting re-review finds no new comments from `$REVIEWER` for `3` consecutive poll cycles, treat the review as complete.
+**No new comments after re-review**: If no new comments from `$REVIEWER` have appeared within **10 minutes** of requesting re-review, treat the review as complete. Record the timestamp when re-review is requested (`REREVIEW_TIME=$(date +%s)`) and check `$(date +%s) - $REREVIEW_TIME >= 600` each poll cycle.
 
 **Auto-merge**: If `--auto-merge` is set and the PR is approved or marked as complete:
 ```bash
