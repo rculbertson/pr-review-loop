@@ -138,7 +138,7 @@ If both Step 2 and Step 3 found no new comments, print `Sleeping ${POLL_INTERVAL
 ```bash
 /bin/sleep $POLL_INTERVAL
 ```
-Then go back to Step 1.
+Run this synchronously (do **not** use `run_in_background`). Wait for it to complete before going back to Step 1. Always use `$POLL_INTERVAL` — do not substitute a different duration.
 
 ### Step 5: Process each new comment
 
