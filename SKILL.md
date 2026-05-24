@@ -33,7 +33,7 @@ Parse the invocation arguments:
 |----------|---------|-------------|
 | First positional arg | (none) | PR number (e.g. `42`) or full GitHub PR URL |
 | `--auto-merge` | false | Merge the PR automatically once approved |
-| `--reviewer <username>` | `gemini-code-assist[bot]` | GitHub username of the reviewer bot (GitHub App logins include the `[bot]` suffix) |
+| `--reviewer <username>` | `gemini-code-assist` | GitHub username of the reviewer bot |
 | `--review-command <text>` | `/gemini review` | Comment body that triggers a new review |
 | `--poll-interval <seconds>` | `60` | Seconds to wait between polls when no new comments |
 | `--resume <path>` | (none) | **Internal.** Set by the loop's self-re-arm. Marks a woken cycle that resumes from an existing state file instead of starting fresh. Not normally passed by hand. |
