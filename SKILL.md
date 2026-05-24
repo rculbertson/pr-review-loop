@@ -6,12 +6,10 @@ description: >
   each comment, pushes changes, requests re-review, and repeats until the PR
   is approved. Optionally auto-merges when all comments are resolved.
 
-  TRIGGER this skill when ANY of these match:
-  - The prompt starts with "/pr-review-loop"
-  - The user asks to "run the PR review loop", "start automated PR review", or "loop on the PR review"
+  Invoked explicitly via "/pr-review-loop".
 
 compatibility: Claude Code. Requires gh CLI and git.
-allowed-tools: Bash Read Write Edit Glob Grep Task
+allowed-tools: Bash Read Write Edit Glob Grep Task ScheduleWakeup
 metadata:
   author: Ryan Culbertson
   version: "1.0"
@@ -35,9 +33,10 @@ Parse the invocation arguments:
 |----------|---------|-------------|
 | First positional arg | (none) | PR number (e.g. `42`) or full GitHub PR URL |
 | `--auto-merge` | false | Merge the PR automatically once approved |
-| `--reviewer <username>` | `gemini-code-assist` | GitHub username of the reviewer bot |
+| `--reviewer <username>` | `gemini-code-assist[bot]` | GitHub username of the reviewer bot (GitHub App logins include the `[bot]` suffix) |
 | `--review-command <text>` | `/gemini review` | Comment body that triggers a new review |
-| `--poll-interval <seconds>` | `10` | Seconds to wait between polls when no new comments |
+| `--poll-interval <seconds>` | `60` | Seconds to wait between polls when no new comments |
+| `--resume <path>` | (none) | **Internal.** Set by the loop's self-re-arm. Marks a woken cycle that resumes from an existing state file instead of starting fresh. Not normally passed by hand. |
 
 If no PR number or URL is provided, infer the PR from the current branch by running:
 ```bash
@@ -46,6 +45,11 @@ gh pr view --json number,headRefName,baseRefName,url
 If that command fails (no associated PR), stop and tell the user no PR was found for the current branch.
 
 ## Initialization
+
+This skill runs **one poll cycle per invocation** and re-arms itself with `ScheduleWakeup` (see Poll Loop). There are two entry paths:
+
+- **Fresh start** (no `--resume`): run all of Initialization below.
+- **Resume** (`--resume <path>` is set): this is a woken cycle. Set `STATE_FILE=<path>`, skip steps 2–4 (no PR-metadata re-resolve, no state-file creation, no config summary print), load the persisted `REREVIEW_TIME` line if present, and go straight to the Poll Loop. Still resolve `$PR` and the other options (step 1) from the invocation args.
 
 1. Resolve the PR number and repo. If a full URL was given, extract the number from the path. Store the PR number as `$PR`.
 
@@ -57,7 +61,7 @@ If that command fails (no associated PR), stop and tell the user no PR was found
 
 3. Create a state file and pre-populate it with already-addressed comment IDs:
    ```bash
-   STATE_FILE=$(mktemp /tmp/pr-review-loop-${PR}-XXXXXX.txt)
+   STATE_FILE=$(mktemp "${TMPDIR:-/tmp}/pr-review-loop-${PR}-XXXXXX")
    ```
    Fetch all inline review comments on the PR and check which ones already have a reply from the authenticated user (i.e. us). Pre-populate `$STATE_FILE` with those IDs so they are skipped:
    ```bash
@@ -77,6 +81,10 @@ If that command fails (no associated PR), stop and tell the user no PR was found
    ```
    This means that on a fresh session, comments already replied to in a previous session are treated as already processed and will not be re-addressed.
 
+   **State-file format**: the file holds one seen comment/review `id` per line, plus two optional bookkeeping lines that must survive across woken cycles (so they live in the file, not just in memory):
+   - `REREVIEW_TIME=<epoch>` — when re-review was last requested; the clock for the no-comment termination (see Termination).
+   - `POLL_COUNT=<n>` — number of cycles run; used by the "reviewer not found" guard (see Error Handling).
+
 4. Print a summary of the configuration:
    ```
    PR: #$PR — $PR_TITLE
@@ -88,17 +96,20 @@ If that command fails (no associated PR), stop and tell the user no PR was found
 
 ## Poll Loop
 
-**Do not use the Monitor tool.** It runs in a subshell environment where `gh` and other tools may not be on PATH. Instead, Claude drives the polling loop directly using the Bash tool for each individual `gh` call.
+Each invocation runs **exactly one** poll cycle (Steps 1–8 below), then either terminates or re-arms itself with `ScheduleWakeup` and ends the turn. The waiting between cycles is handled by `ScheduleWakeup` parking the session — **do not** use a blocking `sleep` and **do not** use the Monitor tool. Drive each `gh` call directly with the Bash tool.
 
-Repeat the following steps until a termination condition is met.
+### Step 1: Bump the poll counter, then check termination conditions
 
-### Step 1: Check approval status
+First increment the `POLL_COUNT=<n>` line in `$STATE_FILE` (replace the old line; start at 1 if absent). See the "Reviewer not found" guard in Error Handling.
 
-Run via the Bash tool:
+Then check approval status via the Bash tool:
 ```bash
 gh pr view $PR --json reviewDecision --jq '.reviewDecision'
 ```
-If the result is `APPROVED`, exit the loop (see Termination).
+- If the result is `APPROVED`, run the **Approved** termination path (auto-merge if set), then stop **without** re-arming.
+- Otherwise, if a `REREVIEW_TIME` is recorded in `$STATE_FILE` and `$(date +%s) - REREVIEW_TIME >= 600` (10 minutes with no new comments since re-review), run the **No new comments after re-review** termination path, then stop **without** re-arming.
+
+Only if neither termination condition is met, continue to Step 2.
 
 ### Step 2: Fetch new inline comments
 
@@ -132,13 +143,9 @@ Parse the TSV output. For each row (fields: `id`, `state`, `body`):
 
 If no new comments found, print: `No new PR-level reviews.`
 
-### Step 4: No new comments — wait
+### Step 4: No new comments — skip ahead
 
-If both Step 2 and Step 3 found no new comments, print `Sleeping ${POLL_INTERVAL}s...` and run:
-```bash
-/bin/sleep $POLL_INTERVAL
-```
-Run this synchronously (do **not** use `run_in_background`). Wait for it to complete before going back to Step 1. Always use `$POLL_INTERVAL` — do not substitute a different duration.
+If both Step 2 and Step 3 found no new comments this cycle, there is nothing to process — skip Steps 5–7 and go straight to Step 8 (re-arm).
 
 ### Step 5: Process each new comment
 
@@ -201,6 +208,12 @@ If changes were pushed **or** any comments were disputed this cycle, post the re
 gh pr comment $PR --body "$REVIEW_COMMAND"
 ```
 
+Then record the re-review timestamp in the state file (this resets the no-comment termination clock). Replace any existing `REREVIEW_TIME=` line:
+```bash
+sed -i '' '/^REREVIEW_TIME=/d' "$STATE_FILE"
+echo "REREVIEW_TIME=$(date +%s)" >> "$STATE_FILE"
+```
+
 Then print a status update to the user:
 ```
 # If changes were pushed:
@@ -210,15 +223,25 @@ Pushed changes and requested re-review. Waiting for $REVIEWER to respond...
 Posted disputes and requested re-review. Waiting for $REVIEWER to respond to the disagreements...
 ```
 
-### Step 8: Check termination
+### Step 8: Re-arm the loop and end the turn
 
-Check the termination conditions (see below). If none are met, go back to Step 1.
+The termination checks already ran at the top of this cycle (Step 1), so if execution reached here the loop should continue. Schedule the next cycle and then **stop** (end the turn) — do not loop in-process and do not sleep.
+
+Call the `ScheduleWakeup` tool with:
+- `delaySeconds`: `$POLL_INTERVAL` (the runtime clamps to [60, 3600])
+- `prompt`: the resume invocation, re-passing the original options plus `--resume`:
+  `/pr-review-loop $PR --reviewer "$REVIEWER" --review-command "$REVIEW_COMMAND" [--auto-merge] --poll-interval $POLL_INTERVAL --resume $STATE_FILE`
+- `reason`: a short note, e.g. `"polling PR #$PR for $REVIEWER response"`
+
+Print `Next check in ${POLL_INTERVAL}s (state: $STATE_FILE). Parking until then.` and end the turn. The scheduled wakeup re-enters this skill via the resume path (Initialization), which runs the next single cycle.
 
 ## Termination Conditions
 
-**Approved**: If `gh pr view $PR --json reviewDecision --jq '.reviewDecision'` returns `APPROVED`, print a success message and exit the loop.
+When a termination condition is met (detected in Step 1), run the relevant path below and **do not** call `ScheduleWakeup` — ending the turn without re-arming stops the loop.
 
-**No new comments after re-review**: If no new comments from `$REVIEWER` have appeared within **10 minutes** of requesting re-review, treat the review as complete. Record the timestamp when re-review is requested (`REREVIEW_TIME=$(date +%s)`) and check `$(date +%s) - $REREVIEW_TIME >= 600` each poll cycle.
+**Approved**: `reviewDecision` is `APPROVED`. Print a success message, run auto-merge if set, and stop without re-arming.
+
+**No new comments after re-review**: no new comments from `$REVIEWER` have appeared within **10 minutes** of requesting re-review. The `REREVIEW_TIME=<epoch>` line is written to `$STATE_FILE` in Step 7 and checked at the top of each cycle (`$(date +%s) - REREVIEW_TIME >= 600`). Treat the review as complete, run auto-merge if set, and stop without re-arming.
 
 **Auto-merge**: If `--auto-merge` is set and the PR is approved or marked as complete:
 ```bash
@@ -226,13 +249,13 @@ gh pr merge $PR --squash --delete-branch
 ```
 Use `--squash` by default. If the merge fails with a squash error (e.g., branch protection requires merge commits), retry with `--merge`.
 
-**Manual stop**: The user can Ctrl+C at any time. On exit, print the path to `$STATE_FILE` so the session can be resumed later if desired.
+**Manual stop**: The user can interrupt during a park or Ctrl+C at any time. Whenever the loop stops (terminating or parking), the `$STATE_FILE` path is printed so the session can be resumed later via `--resume`.
 
 ## Error Handling
 
 - **Rate limit**: If `gh` returns HTTP 429 or a rate-limit message, wait 60 seconds before retrying (not the normal poll interval).
 - **Push failure**: If `git push` fails, print the error and stop — do not request re-review or loop further. The user needs to resolve the conflict manually.
-- **Reviewer not found**: If after 10 poll cycles no comments from `$REVIEWER` have ever appeared, warn the user: "No comments found from '$REVIEWER' after N polls. Verify the reviewer username is correct."
+- **Reviewer not found**: Increment the `POLL_COUNT=<n>` line in `$STATE_FILE` at the start of each cycle (replace the old line). If `POLL_COUNT` reaches 10 and no comments from `$REVIEWER` have ever been seen (state file has no comment IDs), warn the user — "No comments found from '$REVIEWER' after N polls. Verify the reviewer username is correct." — and **stop without re-arming** so the loop does not park forever on a misconfigured reviewer name.
 - **gh not authenticated**: If `gh` commands fail with an auth error, stop immediately and tell the user to run `gh auth login`.
 
 ## Implementation Notes

@@ -18,9 +18,10 @@ When you open a PR and an AI reviewer (Gemini, Copilot, etc.) leaves comments, t
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--auto-merge` | false | Merge PR automatically once approved |
-| `--reviewer <username>` | `gemini-code-assist[bot]` | GitHub username of the reviewer bot |
+| `--reviewer <username>` | `gemini-code-assist[bot]` | GitHub username of the reviewer bot (GitHub App logins include the `[bot]` suffix) |
 | `--review-command <text>` | `/gemini review` | Comment posted to trigger a new review |
-| `--poll-interval <seconds>` | `30` | Seconds between polls when no new comments |
+| `--poll-interval <seconds>` | `60` | Seconds between polls when no new comments |
+| `--resume <path>` | (none) | Internal — set automatically when the loop re-arms itself between polls. Resumes from an existing state file rather than starting fresh; not normally passed by hand. |
 
 ## What it does
 
@@ -30,6 +31,8 @@ When you open a PR and an AI reviewer (Gemini, Copilot, etc.) leaves comments, t
 4. **Batches** all agreed changes into a single commit + push per poll cycle
 5. **Requests re-review** by posting the configurable trigger comment
 6. **Loops** until approved — then optionally auto-merges
+
+Between polls the skill doesn't block: it runs one cycle, schedules a wakeup `--poll-interval` seconds out, and parks the session (so you can interject), resuming automatically on the next tick.
 
 ## Prerequisites
 
