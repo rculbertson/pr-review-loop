@@ -228,7 +228,7 @@ Posted disputes and requested re-review. Waiting for $REVIEWER to respond to the
 The termination checks already ran at the top of this cycle (Step 1), so if execution reached here the loop should continue. Schedule the next cycle and then **stop** (end the turn) — do not loop in-process and do not sleep.
 
 Call the `ScheduleWakeup` tool with:
-- `delaySeconds`: `$POLL_INTERVAL` (the runtime clamps to [60, 3600])
+- `delaySeconds`: exactly `$POLL_INTERVAL` (the runtime clamps to [60, 3600]). This is intentional external-service polling (GitHub, which the harness cannot notify us about) — do **not** substitute the `ScheduleWakeup` cache-warmth heuristic (e.g. 270s/1200s) for the configured interval.
 - `prompt`: the resume invocation, re-passing the original options plus `--resume`:
   `/pr-review-loop $PR --reviewer "$REVIEWER" --review-command "$REVIEW_COMMAND" [--auto-merge] --poll-interval $POLL_INTERVAL --resume $STATE_FILE`
 - `reason`: a short note, e.g. `"polling PR #$PR for $REVIEWER response"`
